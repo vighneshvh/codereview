@@ -7,6 +7,46 @@ import {
   getGitHubAccessToken,
 } from "@/server/services/github";
 
+const FILE_COMMENT_SCHEMA = z.object({
+  file: z.string().min(1),
+  severity: z.enum(["critical", "high", "medium", "low"]).optional(),
+});
+
+type Severity = "critical" | "high" | "medium" | "low";
+
+const SEVERITY_WEIGHT: Record<Severity, number> = {
+  critical: 8,
+  high: 5,
+  medium: 3,
+  low: 1,
+};
+
+function parseReviewComments(input: unknown): Array<{ file: string; severity: Severity }> {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+
+  return input
+    .map((comment) => {
+      const parsed = FILE_COMMENT_SCHEMA.safeParse(comment);
+      if (!parsed.success) {
+        return null;
+      }
+
+      return {
+        file: parsed.data.file,
+        severity: parsed.data.severity ?? "low",
+      };
+    })
+    .filter((comment): comment is { file: string; severity: Severity } => comment !== null);
+}
+
+function getTrendDirection(delta: number): "up" | "down" | "stable" {
+  if (delta > 0) return "up";
+  if (delta < 0) return "down";
+  return "stable";
+}
+
 export const reviewRouter = createTRPCRouter({
   trigger: protectedProcedure
     .input(
@@ -156,5 +196,149 @@ export const reviewRouter = createTRPCRouter({
       });
 
       return review;
+    }),
+  regressionRadar: protectedProcedure
+    .input(
+      z.object({
+        repositoryId: z.string().optional(),
+        windowDays: z.number().min(7).max(90).default(30),
+        topFiles: z.number().min(3).max(20).default(8),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const now = new Date();
+      const recentWindowStart = new Date(
+        now.getTime() - input.windowDays * 24 * 60 * 60 * 1000,
+      );
+      const previousWindowStart = new Date(
+        recentWindowStart.getTime() - input.windowDays * 24 * 60 * 60 * 1000,
+      );
+
+      const whereBase = {
+        userId: ctx.user.id,
+        status: "COMPLETED" as const,
+        ...(input.repositoryId ? { repositoryId: input.repositoryId } : {}),
+      };
+
+      const [recentReviews, previousReviews] = await Promise.all([
+        ctx.db.review.findMany({
+          where: {
+            ...whereBase,
+            createdAt: {
+              gte: recentWindowStart,
+              lte: now,
+            },
+          },
+          select: {
+            createdAt: true,
+            prNumber: true,
+            comments: true,
+          },
+        }),
+        ctx.db.review.findMany({
+          where: {
+            ...whereBase,
+            createdAt: {
+              gte: previousWindowStart,
+              lt: recentWindowStart,
+            },
+          },
+          select: {
+            comments: true,
+          },
+        }),
+      ]);
+
+      type HotspotAccumulator = {
+        file: string;
+        totalFindings: number;
+        weightedScore: number;
+        critical: number;
+        high: number;
+        medium: number;
+        low: number;
+        lastSeenAt: Date | null;
+        prsAffected: Set<number>;
+      };
+
+      const recentMap = new Map<string, HotspotAccumulator>();
+      const previousCounts = new Map<string, number>();
+
+      for (const review of recentReviews) {
+        const comments = parseReviewComments(review.comments);
+
+        for (const comment of comments) {
+          const existing =
+            recentMap.get(comment.file) ??
+            ({
+              file: comment.file,
+              totalFindings: 0,
+              weightedScore: 0,
+              critical: 0,
+              high: 0,
+              medium: 0,
+              low: 0,
+              lastSeenAt: null,
+              prsAffected: new Set<number>(),
+            } satisfies HotspotAccumulator);
+
+          existing.totalFindings += 1;
+          existing.weightedScore += SEVERITY_WEIGHT[comment.severity];
+          existing[comment.severity] += 1;
+          existing.prsAffected.add(review.prNumber);
+          if (!existing.lastSeenAt || review.createdAt > existing.lastSeenAt) {
+            existing.lastSeenAt = review.createdAt;
+          }
+
+          recentMap.set(comment.file, existing);
+        }
+      }
+
+      for (const review of previousReviews) {
+        const comments = parseReviewComments(review.comments);
+        for (const comment of comments) {
+          previousCounts.set(comment.file, (previousCounts.get(comment.file) ?? 0) + 1);
+        }
+      }
+
+      const hotspots = Array.from(recentMap.values())
+        .map((item) => {
+          const previousFindings = previousCounts.get(item.file) ?? 0;
+          const recentFindings = item.totalFindings;
+          const trendDelta = recentFindings - previousFindings;
+
+          return {
+            file: item.file,
+            totalFindings: item.totalFindings,
+            weightedScore: item.weightedScore,
+            critical: item.critical,
+            high: item.high,
+            medium: item.medium,
+            low: item.low,
+            recentFindings,
+            previousFindings,
+            trendDelta,
+            trend: getTrendDirection(trendDelta),
+            prsAffected: item.prsAffected.size,
+            lastSeenAt: item.lastSeenAt,
+          };
+        })
+        .sort((a, b) => {
+          if (b.weightedScore !== a.weightedScore) {
+            return b.weightedScore - a.weightedScore;
+          }
+          return b.totalFindings - a.totalFindings;
+        })
+        .slice(0, input.topFiles);
+
+      return {
+        generatedAt: now,
+        windowDays: input.windowDays,
+        repositoryId: input.repositoryId ?? null,
+        recentReviewCount: recentReviews.length,
+        previousReviewCount: previousReviews.length,
+        hotspotCount: hotspots.length,
+        hotspots,
+      };
     }),
 });

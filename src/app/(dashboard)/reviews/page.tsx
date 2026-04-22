@@ -17,6 +17,10 @@ import {
   FileText,
   ExternalLink,
   RefreshCw,
+  TrendingUp,
+  TrendingDown,
+  Minus,
+  Radar,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -40,7 +44,13 @@ export default function ReviewsPage() {
   const triggerReview = trpc.review.trigger.useMutation({
     onSuccess: () => {
       reviews.refetch();
+      regressionRadar.refetch();
     },
+  });
+
+  const regressionRadar = trpc.review.regressionRadar.useQuery({
+    windowDays: 30,
+    topFiles: 6,
   });
 
   const filteredReviews = reviews.data?.filter(
@@ -110,6 +120,134 @@ export default function ReviewsPage() {
         )}
       </div>
 
+      <Card>
+        <CardContent className="p-5 space-y-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <Radar className="size-4 text-primary" />
+                <h2 className="font-medium">Regression Radar</h2>
+              </div>
+              <p className="text-sm text-muted-foreground mt-1">
+                Files repeatedly flagged in the last 30 days compared to the
+                previous 30-day window.
+              </p>
+            </div>
+            <Button
+              variant={"ghost"}
+              size={"icon-sm"}
+              onClick={() => regressionRadar.refetch()}
+              disabled={regressionRadar.isFetching}
+            >
+              <RefreshCw
+                className={cn(
+                  "size-4",
+                  regressionRadar.isFetching && "animate-spin",
+                )}
+              />
+            </Button>
+          </div>
+
+          {regressionRadar.isLoading ? (
+            <div className="space-y-2">
+              {[...Array(3)].map((_, i) => (
+                <Skeleton key={i} className="h-16 w-full rounded-lg" />
+              ))}
+            </div>
+          ) : regressionRadar.error ? (
+            <p className="text-sm text-destructive">
+              {regressionRadar.error.message}
+            </p>
+          ) : !regressionRadar.data || regressionRadar.data.hotspots.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No hotspot trends yet. Complete a few reviews to build a
+              regression map.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                <RadarStat
+                  label="Analyzed reviews"
+                  value={regressionRadar.data.recentReviewCount}
+                />
+                <RadarStat
+                  label="Previous window"
+                  value={regressionRadar.data.previousReviewCount}
+                />
+                <RadarStat
+                  label="Hotspot files"
+                  value={regressionRadar.data.hotspotCount}
+                />
+                <RadarStat
+                  label="Window"
+                  value={`${regressionRadar.data.windowDays}d`}
+                />
+              </div>
+
+              {regressionRadar.data.hotspots.map((hotspot) => (
+                <div
+                  key={hotspot.file}
+                  className="rounded-lg border bg-card px-3 py-2.5"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium font-mono truncate">
+                        {hotspot.file}
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {hotspot.totalFindings} findings across {hotspot.prsAffected}{" "}
+                        {hotspot.prsAffected === 1 ? "PR" : "PRs"}
+                        {hotspot.lastSeenAt
+                          ? ` • Last seen ${formatRelativeTime(hotspot.lastSeenAt)}`
+                          : ""}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Badge variant="outline" className="tabular-nums">
+                        Score {hotspot.weightedScore}
+                      </Badge>
+                      <TrendBadge trend={hotspot.trend} delta={hotspot.trendDelta} />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 mt-2.5 flex-wrap">
+                    {hotspot.critical > 0 && (
+                      <Badge
+                        variant="outline"
+                        className="border-red-500/20 bg-red-500/10 text-red-600 dark:text-red-400"
+                      >
+                        C {hotspot.critical}
+                      </Badge>
+                    )}
+                    {hotspot.high > 0 && (
+                      <Badge
+                        variant="outline"
+                        className="border-orange-500/20 bg-orange-500/10 text-orange-600 dark:text-orange-400"
+                      >
+                        H {hotspot.high}
+                      </Badge>
+                    )}
+                    {hotspot.medium > 0 && (
+                      <Badge
+                        variant="outline"
+                        className="border-amber-500/20 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                      >
+                        M {hotspot.medium}
+                      </Badge>
+                    )}
+                    {hotspot.low > 0 && (
+                      <Badge variant="outline" className="tabular-nums">
+                        L {hotspot.low}
+                      </Badge>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       {reviews.isLoading ? (
         <div>
           {[...Array(5)].map((_, i) => (
@@ -159,6 +297,51 @@ export default function ReviewsPage() {
         </div>
       )}
     </div>
+  );
+}
+
+function RadarStat({ label, value }: { label: string; value: number | string }) {
+  return (
+    <div className="rounded-md bg-muted/50 px-3 py-2">
+      <p className="text-[11px] text-muted-foreground">{label}</p>
+      <p className="text-sm font-semibold tabular-nums">{value}</p>
+    </div>
+  );
+}
+
+function TrendBadge({
+  trend,
+  delta,
+}: {
+  trend: "up" | "down" | "stable";
+  delta: number;
+}) {
+  if (trend === "up") {
+    return (
+      <Badge
+        variant="outline"
+        className="border-red-500/20 bg-red-500/10 text-red-600 dark:text-red-400"
+      >
+        <TrendingUp className="size-3" />+{delta}
+      </Badge>
+    );
+  }
+
+  if (trend === "down") {
+    return (
+      <Badge
+        variant="outline"
+        className="border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+      >
+        <TrendingDown className="size-3" />{delta}
+      </Badge>
+    );
+  }
+
+  return (
+    <Badge variant="outline" className="tabular-nums">
+      <Minus className="size-3" />0
+    </Badge>
   );
 }
 
