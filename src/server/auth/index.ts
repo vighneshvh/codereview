@@ -2,6 +2,10 @@ import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { db } from "../db";
 
+const githubClientId = process.env.GITHUB_CLIENT_ID;
+const githubClientSecret = process.env.GITHUB_CLIENT_SECRET;
+const betterAuthUrl = process.env.BETTER_AUTH_URL;
+
 export const auth = betterAuth({
   database: prismaAdapter(db, {
     provider: "postgresql", // or "mysql", "postgresql", ...etc
@@ -9,13 +13,16 @@ export const auth = betterAuth({
   emailAndPassword: {
     enabled: true,
   },
-  socialProviders: {
-    github: {
-      clientId: process.env.GITHUB_CLIENT_ID!,
-      clientSecret: process.env.GITHUB_CLIENT_SECRET!,
-      scope: ["read:user", "user:email", "repo"],
-    },
-  },
+  socialProviders:
+    githubClientId && githubClientSecret
+      ? {
+          github: {
+            clientId: githubClientId,
+            clientSecret: githubClientSecret,
+            scope: ["read:user", "user:email", "repo"],
+          },
+        }
+      : {},
   account: {
     accountLinking: {
       enabled: true,
@@ -30,7 +37,7 @@ export const auth = betterAuth({
       maxAge: 60 * 5, // 5 minutes
     },
   },
-  trustedOrigins: [process.env.BETTER_AUTH_URL!],
+  trustedOrigins: betterAuthUrl ? [betterAuthUrl] : [],
 });
 
 export type Session = typeof auth.$Infer.Session;
