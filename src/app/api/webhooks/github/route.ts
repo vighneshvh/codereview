@@ -3,6 +3,9 @@ import crypto from "crypto";
 import { db } from "@/server/db";
 import { inngest } from "@/server/inngest";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 interface PullRequestPayload {
   action: string;
   number: number;
