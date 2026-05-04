@@ -88,12 +88,15 @@ export const reviewPR = inngest.createFunction(
         return { success: false, error: "Invalid repository name" };
       }
 
-      const reviewBeforeFetch = await step.run("ensure-review-active-before-fetch", async () => {
-        return db.review.findUnique({
-          where: { id: reviewId },
-          select: { status: true, error: true },
-        });
-      });
+      const reviewBeforeFetch = await step.run(
+        "ensure-review-active-before-fetch",
+        async () => {
+          return db.review.findUnique({
+            where: { id: reviewId },
+            select: { status: true, error: true },
+          });
+        },
+      );
 
       if (!reviewBeforeFetch) {
         return { success: false, error: "Review not found" };
@@ -128,7 +131,10 @@ export const reviewPR = inngest.createFunction(
         return { success: false, error: "Review not found" };
       }
 
-      if (reviewBeforeAnalyze.status === "FAILED" || reviewBeforeAnalyze.status === "COMPLETED") {
+      if (
+        reviewBeforeAnalyze.status === "FAILED" ||
+        reviewBeforeAnalyze.status === "COMPLETED"
+      ) {
         return {
           success: false,
           error: reviewBeforeAnalyze.error ?? `Review ${reviewBeforeAnalyze.status.toLowerCase()}`,

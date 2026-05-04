@@ -260,10 +260,29 @@ function parseReviewResult(content: string): ReviewResult | null {
   return null;
 }
 
+function createNonJsonFallback(content: string): ReviewResult {
+  const summary = content
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 500);
+
+  return {
+    summary: summary
+      ? `Automated review returned non-JSON output: ${summary}`
+      : "Automated review returned an empty response.",
+    riskScore: 0,
+    comments: [],
+  };
+}
+
 export async function reviewCode(
   prTitle: string,
   files: FileChange[],
 ): Promise<ReviewResult> {
+  if (!process.env.GEMINI_API_KEY) {
+    return toReviewResultFallback("missing GEMINI_API_KEY");
+  }
+
   const diffContent = files
     .filter((f) => f.patch)
     .map(
@@ -345,8 +364,8 @@ Important:
       return repairedParsed;
     }
   } catch {
-    return toReviewResultFallback("invalid JSON and repair request failed");
+    return createNonJsonFallback(content);
   }
 
-  return toReviewResultFallback("invalid JSON after repair attempt");
+  return createNonJsonFallback(content);
 }
