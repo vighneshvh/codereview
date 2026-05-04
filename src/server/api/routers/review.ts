@@ -101,15 +101,49 @@ export const reviewRouter = createTRPCRouter({
         },
       });
 
-      await inngest.send({
-        name: "review/pr.requested",
-        data: {
-          reviewId: review.id,
-          repositoryId: repository.id,
-          prNumber: pr.number,
-          userId: ctx.user.id,
-        },
-      });
+      if (!process.env.INNGEST_EVENT_KEY) {
+        await ctx.db.review.update({
+          where: { id: review.id },
+          data: {
+            status: "FAILED",
+            error: "INNGEST_EVENT_KEY is not set",
+          },
+        });
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Inngest is not configured",
+        });
+      }
+
+      try {
+        await inngest.send({
+          name: "review/pr.requested",
+          data: {
+            reviewId: review.id,
+            repositoryId: repository.id,
+            prNumber: pr.number,
+            userId: ctx.user.id,
+          },
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Failed to enqueue review";
+
+        await ctx.db.review.update({
+          where: { id: review.id },
+          data: {
+            status: "FAILED",
+            error: message,
+          },
+        });
+
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Failed to enqueue review",
+        });
+      }
 
       return { reviewId: review.id };
     }),

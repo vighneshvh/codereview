@@ -111,16 +111,47 @@ export async function POST(request: NextRequest) {
     },
   });
 
-  // Trigger the Inngest job
-  await inngest.send({
-    name: "review/pr.requested",
-    data: {
-      reviewId: review.id,
-      repositoryId: repository.id,
-      prNumber: data.pull_request.number,
-      userId: repository.userId,
-    },
-  });
+  if (!process.env.INNGEST_EVENT_KEY) {
+    await db.review.update({
+      where: { id: review.id },
+      data: {
+        status: "FAILED",
+        error: "INNGEST_EVENT_KEY is not set",
+      },
+    });
+    return NextResponse.json(
+      { message: "Inngest is not configured" },
+      { status: 500 },
+    );
+  }
+
+  try {
+    // Trigger the Inngest job
+    await inngest.send({
+      name: "review/pr.requested",
+      data: {
+        reviewId: review.id,
+        repositoryId: repository.id,
+        prNumber: data.pull_request.number,
+        userId: repository.userId,
+      },
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Failed to enqueue review";
+
+    await db.review.update({
+      where: { id: review.id },
+      data: {
+        status: "FAILED",
+        error: message,
+      },
+    });
+
+    return NextResponse.json({ message }, { status: 500 });
+  }
 
   return NextResponse.json(
     { message: "Review triggered", reviewId: review.id },
